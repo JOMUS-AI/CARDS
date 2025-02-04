@@ -1,0 +1,821 @@
+#!/usr/bin/env python3
+import sys, os, math, json, random, time
+from PyQt5 import QtCore, QtGui, QtWidgets
+from docx import Document
+from docx.shared import Cm
+
+# ----------------------- ФУНКЦИИ ДЛЯ РАБОТЫ С НАСТРОЙКАМИ -----------------------
+
+# Для хранения настроек приложения используем QSettings с организацией и именем приложения.
+def getAppSettings():
+    return QtCore.QSettings("MyCompany", "FlashcardsApp")
+
+# ----------------------- НАСТРОЙКИ ВНЕШНЕГО ВИДА -----------------------
+COLOR_BG       = "#000000"   # основной фон (черный)
+COLOR_TEXT     = "#FFFFFF"   # белый текст
+COLOR_ACCENT   = "#8B0000"   # темно-красный акцент
+COLOR_PLUS_BG  = "#FFFFFF"   # фон для кнопки "+"
+COLOR_PLUS_TXT = "#000000"   # текст для кнопки "+"
+
+GLOBAL_STYLES = f"""
+QMainWindow {{
+    background-color: {COLOR_BG};
+}}
+QWidget {{
+    font-family: Arial;
+    color: {COLOR_TEXT};
+}}
+QToolBar {{
+    background: {COLOR_BG};
+    border: none;
+}}
+QTabBar::tab {{
+    background: {COLOR_ACCENT};
+    padding: 8px 15px;
+    margin: 2px;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+}}
+QTabBar::tab:selected {{
+    background: {COLOR_ACCENT};
+    border-bottom: 2px solid {COLOR_TEXT};
+}}
+QTabWidget::pane {{
+    border: 1px solid {COLOR_ACCENT};
+}}
+QPushButton {{
+    background-color: {COLOR_ACCENT};
+    color: {COLOR_TEXT};
+    border: none;
+    border-radius: 10px;
+    padding: 8px 15px;
+    font-size: 14px;
+}}
+QPushButton:hover {{
+    background-color: #A80000;
+}}
+QLineEdit, QTextEdit {{
+    background-color: #1e1e1e;
+    color: {COLOR_TEXT};
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 5px;
+}}
+"""
+
+MSGBOX_STYLES = "QMessageBox { background-color: #000000; color: #FFFFFF; }"
+
+CARD_STYLE = f"""
+QFrame#CardFrame {{
+    background-color: {COLOR_BG};
+    border: 2px solid {COLOR_TEXT};
+    border-radius: 15px;
+}}
+"""
+
+PLUS_STYLE = f"""
+QFrame#PlusFrame {{
+    background-color: {COLOR_PLUS_BG};
+    border: 2px solid {COLOR_TEXT};
+    border-radius: 15px;
+}}
+QLabel#PlusLabel {{
+    color: {COLOR_PLUS_TXT};
+}}
+"""
+
+# ----------------------- ФУНКЦИЯ МАСШТАБИРОВАНИЯ ТЕКСТА -----------------------
+def adjust_font_size(label: QtWidgets.QLabel, max_width: int, start_size=18, min_size=10):
+    font = label.font()
+    font.setPointSize(start_size)
+    fm = QtGui.QFontMetrics(font)
+    while fm.width(label.text()) > max_width and font.pointSize() > min_size:
+        font.setPointSize(font.pointSize() - 1)
+        fm = QtGui.QFontMetrics(font)
+    label.setFont(font)
+
+# ----------------------- КЛАСС FlashcardWidget -----------------------
+class FlashcardWidget(QtWidgets.QFrame):
+    def __init__(self, question: str, answer: str, question_image: str = None, answer_image: str = None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("CardFrame")
+        self.setStyleSheet(CARD_STYLE)
+        self.question = question
+        self.answer = answer
+        self.question_image = question_image
+        self.answer_image = answer_image
+        self.isFlipped = False  # Флаг переворота
+        self.setFixedSize(250, 150)  # Фиксированный размер карточки
+        self.setup_ui()
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+
+    def setup_ui(self):
+        self.layout = QtWidgets.QVBoxLayout(self)
+        self.layout.setContentsMargins(5, 5, 5, 5)
+        self.layout.setSpacing(5)
+        self.textLabel = QtWidgets.QLabel(self.question, self)
+        self.textLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.textLabel.setWordWrap(True)
+        adjust_font_size(self.textLabel, 230)
+        self.layout.addWidget(self.textLabel, alignment=QtCore.Qt.AlignCenter)
+        self.imageLabel = QtWidgets.QLabel(self)
+        self.imageLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.imageLabel.setScaledContents(True)
+        if self.question_image and os.path.exists(self.question_image):
+            pix = QtGui.QPixmap(self.question_image)
+            self.imageLabel.setPixmap(pix.scaled(230, 100, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            self.layout.addWidget(self.imageLabel, alignment=QtCore.Qt.AlignCenter)
+
+    def update_display(self):
+        if self.isFlipped:
+            self.textLabel.setText(self.answer)
+            adjust_font_size(self.textLabel, 230)
+            if self.answer_image and os.path.exists(self.answer_image):
+                pix = QtGui.QPixmap(self.answer_image)
+                self.imageLabel.setPixmap(pix.scaled(230, 100, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            else:
+                self.imageLabel.clear()
+        else:
+            self.textLabel.setText(self.question)
+            adjust_font_size(self.textLabel, 230)
+            if self.question_image and os.path.exists(self.question_image):
+                pix = QtGui.QPixmap(self.question_image)
+                self.imageLabel.setPixmap(pix.scaled(230, 100, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            else:
+                self.imageLabel.clear()
+
+    def flip(self):
+        self.isFlipped = not self.isFlipped
+        self.update_display()
+
+    def edit(self):
+        dialog = CardEditorDialog(self, parent=self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            q, a, qimg, aimg = dialog.get_data()
+            self.question = q
+            self.answer = a
+            self.question_image = qimg
+            self.answer_image = aimg
+            self.update_display()
+            mw = self.get_main_window()
+            if mw and hasattr(mw, "save_data"):
+                mw.save_data()
+
+    def get_main_window(self):
+        widget = self
+        while widget:
+            if isinstance(widget, QtWidgets.QMainWindow):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def get_section_widget(self):
+        widget = self.parent()
+        while widget:
+            if hasattr(widget, "remove_card"):
+                return widget
+            widget = widget.parent()
+        return None
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self.flip()
+            # Если карточка перевернута (ответ показан), через 10 секунд вернуть исходное состояние
+            QtCore.QTimer.singleShot(10000, lambda: self.flip() if self.isFlipped else None)
+        elif event.button() == QtCore.Qt.RightButton:
+            menu = QtWidgets.QMenu(self)
+            menu.setStyleSheet("QMenu { color: #000000; background-color: #FFFFFF; }")
+            editAction = menu.addAction("Редактировать")
+            deleteAction = menu.addAction("Удалить")
+            action = menu.exec_(event.globalPos())
+            if action == editAction:
+                self.edit()
+            elif action == deleteAction:
+                msgBox = QtWidgets.QMessageBox(self)
+                msgBox.setWindowTitle("Подтверждение удаления")
+                msgBox.setText("Удалить эту карточку?")
+                msgBox.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+                msgBox.setStyleSheet(MSGBOX_STYLES)
+                result = msgBox.exec_()
+                if result == QtWidgets.QMessageBox.Yes:
+                    section = self.get_section_widget()
+                    if section:
+                        section.remove_card(self)
+        else:
+            super().mousePressEvent(event)
+
+# ----------------------- КЛАСС PlusWidget -----------------------
+class PlusWidget(QtWidgets.QFrame):
+    clicked = QtCore.pyqtSignal()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("PlusFrame")
+        self.setStyleSheet(PLUS_STYLE)
+        self.setFixedSize(250, 150)
+        self.setup_ui()
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+
+    def setup_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        self.plusLabel = QtWidgets.QLabel("+", self)
+        self.plusLabel.setObjectName("PlusLabel")
+        self.plusLabel.setAlignment(QtCore.Qt.AlignCenter)
+        font = self.plusLabel.font()
+        font.setPointSize(36)
+        self.plusLabel.setFont(font)
+        layout.addStretch()
+        layout.addWidget(self.plusLabel, alignment=QtCore.Qt.AlignCenter)
+        layout.addStretch()
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+# ----------------------- КЛАСС CardEditorDialog -----------------------
+class CardEditorDialog(QtWidgets.QDialog):
+    def __init__(self, card=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактор карточки" if card else "Новая карточка")
+        self.setModal(True)
+        self.resize(500, 400)
+        self.card = card
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Для диалога задаём белый фон и чёрный текст
+        self.setStyleSheet("QDialog { background-color: #FFFFFF; color: #000000; }")
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(QtWidgets.QLabel("Вопрос:"))
+        self.questionEdit = QtWidgets.QTextEdit(self)
+        self.questionEdit.setPlaceholderText("Введите вопрос")
+        layout.addWidget(self.questionEdit)
+        qImgLayout = QtWidgets.QHBoxLayout()
+        self.questionImgEdit = QtWidgets.QLineEdit(self)
+        self.questionImgEdit.setPlaceholderText("Путь к изображению для вопроса (опционально)")
+        self.qImgBtn = QtWidgets.QPushButton("Выбрать...")
+        qImgLayout.addWidget(self.questionImgEdit)
+        qImgLayout.addWidget(self.qImgBtn)
+        layout.addLayout(qImgLayout)
+        self.qImgBtn.clicked.connect(self.select_question_image)
+        layout.addWidget(QtWidgets.QLabel("Ответ:"))
+        self.answerEdit = QtWidgets.QTextEdit(self)
+        self.answerEdit.setPlaceholderText("Введите ответ")
+        layout.addWidget(self.answerEdit)
+        aImgLayout = QtWidgets.QHBoxLayout()
+        self.answerImgEdit = QtWidgets.QLineEdit(self)
+        self.answerImgEdit.setPlaceholderText("Путь к изображению для ответа (опционально)")
+        self.aImgBtn = QtWidgets.QPushButton("Выбрать...")
+        aImgLayout.addWidget(self.answerImgEdit)
+        aImgLayout.addWidget(self.aImgBtn)
+        layout.addLayout(aImgLayout)
+        self.aImgBtn.clicked.connect(self.select_answer_image)
+        btnLayout = QtWidgets.QHBoxLayout()
+        self.saveBtn = QtWidgets.QPushButton("Сохранить")
+        self.cancelBtn = QtWidgets.QPushButton("Отмена")
+        btnLayout.addWidget(self.saveBtn)
+        btnLayout.addWidget(self.cancelBtn)
+        layout.addLayout(btnLayout)
+        self.saveBtn.clicked.connect(self.accept)
+        self.cancelBtn.clicked.connect(self.reject)
+        if self.card:
+            self.questionEdit.setText(self.card.question)
+            self.answerEdit.setText(self.card.answer)
+            self.questionImgEdit.setText(self.card.question_image or "")
+            self.answerImgEdit.setText(self.card.answer_image or "")
+
+    def select_question_image(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Выберите изображение для вопроса", "", "Изображения (*.png *.jpg *.jpeg *.bmp)")
+        if path:
+            self.questionImgEdit.setText(path)
+
+    def select_answer_image(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Выберите изображение для ответа", "", "Изображения (*.png *.jpg *.jpeg *.bmp)")
+        if path:
+            self.answerImgEdit.setText(path)
+
+    def get_data(self):
+        return (
+            self.questionEdit.toPlainText().strip(),
+            self.answerEdit.toPlainText().strip(),
+            self.questionImgEdit.text().strip() or None,
+            self.answerImgEdit.text().strip() or None
+        )
+
+# ----------------------- КЛАСС SettingsDialog -----------------------
+class SettingsDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройки")
+        self.setModal(True)
+        self.resize(400, 200)
+        # Для диалога задаём белый фон и чёрный текст
+        self.setStyleSheet("QDialog { background-color: #000000; color: #000000; }")
+        self.setup_ui()
+        self.load_settings()
+
+    def setup_ui(self):
+        layout = QtWidgets.QFormLayout(self)
+
+        self.methodCombo = QtWidgets.QComboBox(self)
+        self.methodCombo.addItems(["JSON", "QSettings"])
+        layout.addRow("Метод сохранения:", self.methodCombo)
+
+        self.jsonPathEdit = QtWidgets.QLineEdit(self)
+        self.jsonPathBtn = QtWidgets.QPushButton("Выбрать...", self)
+        hLayout = QtWidgets.QHBoxLayout()
+        hLayout.addWidget(self.jsonPathEdit)
+        hLayout.addWidget(self.jsonPathBtn)
+        layout.addRow("Путь к JSON:", hLayout)
+        self.jsonPathBtn.clicked.connect(self.choose_json_path)
+
+        self.autoSaveCheck = QtWidgets.QCheckBox("Включить автосохранение", self)
+        layout.addRow(self.autoSaveCheck)
+
+        btnLayout = QtWidgets.QHBoxLayout()
+        self.okBtn = QtWidgets.QPushButton("ОК", self)
+        self.cancelBtn = QtWidgets.QPushButton("Отмена", self)
+        btnLayout.addStretch()
+        btnLayout.addWidget(self.okBtn)
+        btnLayout.addWidget(self.cancelBtn)
+        layout.addRow(btnLayout)
+
+        self.okBtn.clicked.connect(self.accept)
+        self.cancelBtn.clicked.connect(self.reject)
+
+    def choose_json_path(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Выбрать JSON-файл", os.path.join(os.path.dirname(os.path.abspath(__file__)), "flashcards_data.json"), "JSON файлы (*.json)")
+        if path:
+            self.jsonPathEdit.setText(path)
+
+    def load_settings(self):
+        settings = getAppSettings()
+        method = settings.value("save_method", "JSON")
+        self.methodCombo.setCurrentText(method)
+        json_path = settings.value("json_path", os.path.join(os.path.dirname(os.path.abspath(__file__)), "flashcards_data.json"))
+        self.jsonPathEdit.setText(json_path)
+        auto_save = settings.value("auto_save", "true").lower() in ["true", "1"]
+        self.autoSaveCheck.setChecked(auto_save)
+
+    def save_settings(self):
+        settings = getAppSettings()
+        settings.setValue("save_method", self.methodCombo.currentText())
+        settings.setValue("json_path", self.jsonPathEdit.text())
+        settings.setValue("auto_save", "true" if self.autoSaveCheck.isChecked() else "false")
+        settings.sync()
+
+# ----------------------- КЛАСС PlayModeDialog -----------------------
+class PlayModeDialog(QtWidgets.QDialog):
+    def __init__(self, cards: list, parent=None):
+        """
+        В режиме игры карточки выбираются случайным образом.
+        Если игрок отмечает «Знаю», карточка удаляется из очереди.
+        Если отмечает «Плохо знаю», карточка возвращается в конец очереди.
+        По окончании игры показывается статистика.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Режим игры")
+        self.setModal(True)
+        self.all_cards = cards.copy()
+        self.remaining_cards = cards.copy()
+        random.shuffle(self.remaining_cards)
+        self.correct_count = 0
+        self.wrong_count = 0
+        self.start_time = time.time()
+        self.setup_ui()
+        self.show_next_card()
+
+    def setup_ui(self):
+        self.resize(600, 500)
+        self.layout = QtWidgets.QVBoxLayout(self)
+        self.displayWidget = QtWidgets.QWidget(self)
+        self.displayWidget.setStyleSheet("background-color: #FFFFFF;")
+        dLayout = QtWidgets.QVBoxLayout(self.displayWidget)
+        self.gameTextLabel = QtWidgets.QLabel("", self.displayWidget)
+        self.gameTextLabel.setStyleSheet("color: #000000;")
+        self.gameTextLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.gameTextLabel.setWordWrap(True)
+        dLayout.addWidget(self.gameTextLabel)
+        self.gameImageLabel = QtWidgets.QLabel("", self.displayWidget)
+        self.gameImageLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.gameImageLabel.setScaledContents(True)
+        dLayout.addWidget(self.gameImageLabel)
+        self.layout.addWidget(self.displayWidget, stretch=1)
+        btnLayout = QtWidgets.QHBoxLayout()
+        self.flipBtn = QtWidgets.QPushButton("Перевернуть")
+        self.knowBtn = QtWidgets.QPushButton("Знаю")
+        self.dontKnowBtn = QtWidgets.QPushButton("Плохо знаю")
+        self.stopBtn = QtWidgets.QPushButton("Стоп")
+        for btn in (self.flipBtn, self.knowBtn, self.dontKnowBtn, self.stopBtn):
+            btnLayout.addWidget(btn)
+        self.layout.addLayout(btnLayout)
+        self.flipBtn.clicked.connect(self.flip_card)
+        self.knowBtn.clicked.connect(lambda: self.mark_card(known=True))
+        self.dontKnowBtn.clicked.connect(lambda: self.mark_card(known=False))
+        self.stopBtn.clicked.connect(self.end_game)
+        self.current_flipped = False
+
+    def show_next_card(self):
+        if not self.remaining_cards:
+            self.end_game()
+            return
+        self.current_card = random.choice(self.remaining_cards)
+        self.current_flipped = False
+        self.gameTextLabel.setText(self.current_card.question)
+        adjust_font_size(self.gameTextLabel, 550, start_size=24)
+        if self.current_card.question_image and os.path.exists(self.current_card.question_image):
+            pix = QtGui.QPixmap(self.current_card.question_image)
+            self.gameImageLabel.setPixmap(pix.scaled(300, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        else:
+            self.gameImageLabel.clear()
+
+    def flip_card(self):
+        if self.current_flipped:
+            self.gameTextLabel.setText(self.current_card.question)
+            if self.current_card.question_image and os.path.exists(self.current_card.question_image):
+                pix = QtGui.QPixmap(self.current_card.question_image)
+                self.gameImageLabel.setPixmap(pix.scaled(300, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            else:
+                self.gameImageLabel.clear()
+        else:
+            self.gameTextLabel.setText(self.current_card.answer)
+            if self.current_card.answer_image and os.path.exists(self.current_card.answer_image):
+                pix = QtGui.QPixmap(self.current_card.answer_image)
+                self.gameImageLabel.setPixmap(pix.scaled(300, 200, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            else:
+                self.gameImageLabel.clear()
+        self.current_flipped = not self.current_flipped
+        adjust_font_size(self.gameTextLabel, 550, start_size=24)
+
+    def mark_card(self, known: bool):
+        if known:
+            self.remaining_cards.remove(self.current_card)
+            self.correct_count += 1
+        else:
+            self.remaining_cards.remove(self.current_card)
+            self.remaining_cards.append(self.current_card)
+            self.wrong_count += 1
+        self.show_next_card()
+
+    def end_game(self):
+        elapsed = time.time() - self.start_time
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        stat_msg = (f"Игра завершена!\n"
+                    f"Правильных ответов: {self.correct_count}\n"
+                    f"Неправильных ответов: {self.wrong_count}\n"
+                    f"Время игры: {minutes} мин {seconds} сек")
+        msg = QtWidgets.QMessageBox(self)
+        msg.setWindowTitle("Статистика игры")
+        msg.setText(stat_msg)
+        msg.setStyleSheet(MSGBOX_STYLES)
+        msg.exec_()
+        self.accept()
+
+# ----------------------- КЛАСС SectionWidget -----------------------
+class SectionWidget(QtWidgets.QWidget):
+    def __init__(self, name: str, parent=None):
+        super().__init__(parent)
+        self.section_name = name
+        self.cards = []  # список FlashcardWidget
+        self.cards_per_page = 9  # (3x3)
+        self.current_page = 0
+        self.setup_ui()
+
+    def setup_ui(self):
+        mainLayout = QtWidgets.QVBoxLayout(self)
+        mainLayout.setContentsMargins(10, 10, 10, 10)
+        self.stack = QtWidgets.QStackedWidget(self)
+        mainLayout.addWidget(self.stack)
+        navLayout = QtWidgets.QHBoxLayout()
+        self.leftArrow = QtWidgets.QPushButton("◀")
+        self.rightArrow = QtWidgets.QPushButton("▶")
+        self.leftArrow.setFixedWidth(50)
+        self.rightArrow.setFixedWidth(50)
+        navLayout.addWidget(self.leftArrow)
+        navLayout.addStretch()
+        navLayout.addWidget(self.rightArrow)
+        mainLayout.addLayout(navLayout)
+        self.leftArrow.clicked.connect(self.prev_page)
+        self.rightArrow.clicked.connect(self.next_page)
+        self.refresh_pages()
+
+    def refresh_pages(self):
+        while self.stack.count() > 0:
+            widget = self.stack.widget(0)
+            self.stack.removeWidget(widget)
+            widget.deleteLater()
+        all_items = self.cards.copy()
+        plus = PlusWidget(self)
+        plus.clicked.connect(lambda: self.new_card())
+        all_items.append(plus)
+        total = len(all_items)
+        num_pages = math.ceil(total / self.cards_per_page)
+        for p in range(num_pages):
+            page = QtWidgets.QWidget()
+            grid = QtWidgets.QGridLayout(page)
+            grid.setSpacing(10)
+            grid.setContentsMargins(10, 10, 10, 10)
+            for idx in range(self.cards_per_page):
+                item_index = p * self.cards_per_page + idx
+                if item_index < total:
+                    widget = all_items[item_index]
+                    row = idx // 3
+                    col = idx % 3
+                    grid.addWidget(widget, row, col)
+            self.stack.addWidget(page)
+        if self.stack.count() > 0:
+            self.stack.setCurrentIndex(self.current_page)
+        else:
+            self.current_page = 0
+
+    def prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.stack.setCurrentIndex(self.current_page)
+
+    def next_page(self):
+        if self.current_page < self.stack.count() - 1:
+            self.current_page += 1
+            self.stack.setCurrentIndex(self.current_page)
+
+    def get_main_window(self):
+        widget = self
+        while widget:
+            if isinstance(widget, QtWidgets.QMainWindow):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def new_card(self):
+        dialog = CardEditorDialog(parent=self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            question, answer, qimg, aimg = dialog.get_data()
+            if question and answer:
+                card = FlashcardWidget(question, answer, qimg, aimg, self)
+                self.cards.append(card)
+                self.refresh_pages()
+                mw = self.get_main_window()
+                if mw and hasattr(mw, "save_data"):
+                    mw.save_data()
+
+    def remove_card(self, card):
+        if card in self.cards:
+            self.cards.remove(card)
+            card.setParent(None)
+            card.deleteLater()
+            self.refresh_pages()
+            mw = self.get_main_window()
+            if mw and hasattr(mw, "save_data"):
+                mw.save_data()
+
+# ----------------------- КЛАСС FlashcardsApp -----------------------
+class FlashcardsApp(QtWidgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("cards JOMUS")
+        self.setWindowIcon(QtGui.QIcon("icon.png"))
+        self.setStyleSheet(GLOBAL_STYLES)
+        self.sections = []  # список разделов
+        self.setup_ui()
+        self.load_data()
+        self.setup_autosave()
+        self.showMaximized()
+
+    def setup_ui(self):
+        self.toolbar = QtWidgets.QToolBar()
+        self.addToolBar(self.toolbar)
+        self.fullscreenAction = QtWidgets.QAction("Полный экран", self)
+        self.playAction = QtWidgets.QAction("Играть", self)
+        self.printAction = QtWidgets.QAction("Печать", self)
+        self.newSectionAction = QtWidgets.QAction("Новый раздел", self)
+        self.renameSectionAction = QtWidgets.QAction("Переименовать раздел", self)
+        self.deleteSectionAction = QtWidgets.QAction("Удалить раздел", self)
+        self.settingsAction = QtWidgets.QAction("Настройки", self)
+        self.saveAction = QtWidgets.QAction("Сохранить", self)
+        self.toolbar.addAction(self.fullscreenAction)
+        self.toolbar.addAction(self.playAction)
+        self.toolbar.addAction(self.printAction)
+        self.toolbar.addSeparator()
+        self.toolbar.addAction(self.newSectionAction)
+        self.toolbar.addAction(self.renameSectionAction)
+        self.toolbar.addAction(self.deleteSectionAction)
+        self.toolbar.addSeparator()
+        self.toolbar.addAction(self.settingsAction)
+        self.toolbar.addAction(self.saveAction)
+        self.fullscreenAction.triggered.connect(self.toggle_fullscreen)
+        self.playAction.triggered.connect(self.start_play_mode)
+        self.printAction.triggered.connect(self.export_to_word)
+        self.newSectionAction.triggered.connect(self.new_section)
+        self.renameSectionAction.triggered.connect(self.rename_section)
+        self.deleteSectionAction.triggered.connect(self.delete_section)
+        self.settingsAction.triggered.connect(self.open_settings)
+        self.saveAction.triggered.connect(self.save_data)
+        self.tabs = QtWidgets.QTabWidget()
+        self.setCentralWidget(self.tabs)
+        self.watermark = QtWidgets.QLabel("JOMUS", self)
+        self.watermark.setStyleSheet("color: #555555; font-size: 10px;")
+        self.watermark.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignBottom)
+        self.statusBar().addPermanentWidget(self.watermark)
+        if self.tabs.count() == 0:
+            self.add_section("Раздел 1")
+
+    def add_section(self, name: str, cards_data=None):
+        section = SectionWidget(name, self)
+        index = self.tabs.addTab(section, name)
+        self.tabs.setCurrentIndex(index)
+        if cards_data:
+            for card in cards_data:
+                new_card = FlashcardWidget(
+                    card.get("question", ""),
+                    card.get("answer", ""),
+                    card.get("question_image", None),
+                    card.get("answer_image", None),
+                    section
+                )
+                section.cards.append(new_card)
+            section.refresh_pages()
+        self.save_data()
+
+    def new_section(self):
+        name, ok = QtWidgets.QInputDialog.getText(self, "Новый раздел", "Введите название раздела:")
+        if ok and name:
+            self.add_section(name)
+
+    def rename_section(self):
+        current = self.tabs.currentWidget()
+        if current:
+            new_name, ok = QtWidgets.QInputDialog.getText(self, "Переименовать раздел", "Введите новое название:")
+            if ok and new_name:
+                index = self.tabs.currentIndex()
+                self.tabs.setTabText(index, new_name)
+                current.section_name = new_name
+                self.save_data()
+
+    def delete_section(self):
+        if self.tabs.count() > 1:
+            index = self.tabs.currentIndex()
+            msgBox = QtWidgets.QMessageBox(self)
+            msgBox.setWindowTitle("Удалить раздел")
+            msgBox.setText("Удалить текущий раздел и все содержащиеся карточки?")
+            msgBox.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            msgBox.setStyleSheet(MSGBOX_STYLES)
+            result = msgBox.exec_()
+            if result == QtWidgets.QMessageBox.Yes:
+                self.tabs.removeTab(index)
+                self.save_data()
+        else:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Нельзя удалить последний раздел.")
+
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+            self.fullscreenAction.setText("Полный экран")
+        else:
+            self.showFullScreen()
+            self.fullscreenAction.setText("Оконный режим")
+
+    def start_play_mode(self):
+        section = self.tabs.currentWidget()
+        if section and section.cards:
+            playDialog = PlayModeDialog(section.cards, self)
+            playDialog.exec_()
+        else:
+            QtWidgets.QMessageBox.information(self, "Информация", "В текущем разделе нет карточек для игры.")
+
+    def export_to_word(self):
+        section = self.tabs.currentWidget()
+        if not section:
+            return
+        doc = Document()
+        card_width = Cm(10)
+        questions = []
+        answers = []
+        for card in section.cards:
+            questions.append({
+                "text": card.question,
+                "image": card.question_image
+            })
+            answers.append({
+                "text": card.answer,
+                "image": card.answer_image
+            })
+        def add_cards_page(cards_list, title):
+            doc.add_heading(title, level=1)
+            cols = 2
+            rows = math.ceil(len(cards_list) / cols)
+            table = doc.add_table(rows=rows, cols=cols)
+            table.style = "Table Grid"
+            idx = 0
+            for r in range(rows):
+                for c in range(cols):
+                    cell = table.cell(r, c)
+                    if idx < len(cards_list):
+                        content = cards_list[idx]
+                        paragraph = cell.paragraphs[0]
+                        paragraph.add_run(content["text"])
+                        if content["image"] and os.path.exists(content["image"]):
+                            try:
+                                run = paragraph.add_run()
+                                run.add_picture(content["image"], width=card_width)
+                            except Exception as e:
+                                print("Ошибка вставки изображения:", e)
+                    idx += 1
+            doc.add_page_break()
+        add_cards_page(questions, "Вопросы")
+        add_cards_page(answers, "Ответы")
+        save_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Сохранить Word документ", "", "Word файлы (*.docx)")
+        if save_path:
+            doc.save(save_path)
+            QtWidgets.QMessageBox.information(self, "Экспорт", "Документ успешно сохранён.")
+
+    def load_data(self):
+        settings = getAppSettings()
+        method = settings.value("save_method", "JSON")
+        if method == "JSON":
+            json_path = settings.value("json_path", os.path.join(os.path.dirname(os.path.abspath(__file__)), "flashcards_data.json"))
+            if os.path.exists(json_path):
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    self.tabs.clear()
+                    for section in data.get("sections", []):
+                        self.add_section(section.get("name", "Раздел"), section.get("cards", []))
+                except Exception as e:
+                    print("Ошибка загрузки JSON:", e)
+        else:
+            ini_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flashcards.ini")
+            data_settings = QtCore.QSettings(ini_path, QtCore.QSettings.IniFormat)
+            data_str = data_settings.value("data", "")
+            if data_str:
+                try:
+                    data = json.loads(data_str)
+                    self.tabs.clear()
+                    for section in data.get("sections", []):
+                        self.add_section(section.get("name", "Раздел"), section.get("cards", []))
+                except Exception as e:
+                    print("Ошибка загрузки INI:", e)
+
+    def save_data(self):
+        data = {"sections": []}
+        for i in range(self.tabs.count()):
+            section_widget = self.tabs.widget(i)
+            section_data = {"name": section_widget.section_name, "cards": []}
+            for card in section_widget.cards:
+                section_data["cards"].append({
+                    "question": card.question,
+                    "answer": card.answer,
+                    "question_image": card.question_image,
+                    "answer_image": card.answer_image
+                })
+            data["sections"].append(section_data)
+        settings = getAppSettings()
+        method = settings.value("save_method", "JSON")
+        if method == "JSON":
+            json_path = settings.value("json_path", os.path.join(os.path.dirname(os.path.abspath(__file__)), "flashcards_data.json"))
+            try:
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=4)
+            except Exception as e:
+                print("Ошибка сохранения в JSON:", e)
+        else:
+            ini_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flashcards.ini")
+            data_settings = QtCore.QSettings(ini_path, QtCore.QSettings.IniFormat)
+            data_settings.setValue("data", json.dumps(data, ensure_ascii=False, indent=4))
+            data_settings.sync()
+
+    def setup_autosave(self):
+        settings = getAppSettings()
+        auto_save = settings.value("auto_save", "true").lower() in ["true", "1"]
+        self.autoSaveEnabled = auto_save
+        self.autoSaveTimer = QtCore.QTimer(self)
+        self.autoSaveTimer.timeout.connect(self.save_data)
+        if self.autoSaveEnabled:
+            self.autoSaveTimer.start(60000)  # каждые 60 секунд
+        else:
+            self.autoSaveTimer.stop()
+
+    def open_settings(self):
+        dialog = SettingsDialog(self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            dialog.save_settings()
+            self.setup_autosave()
+            self.save_data()
+
+    def closeEvent(self, event):
+        self.save_data()
+        event.accept()
+
+# ----------------------- Запуск приложения -----------------------
+def main():
+    app = QtWidgets.QApplication(sys.argv)
+    app.setWindowIcon(QtGui.QIcon("icon.png"))
+    app.setStyleSheet(GLOBAL_STYLES)
+    window = FlashcardsApp()
+    window.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
